@@ -19,8 +19,7 @@ pub fn filter_proxyable_containers(containers: Vec<Container>) -> Vec<ProxyableC
                 .ports
                 .iter()
                 .unique_by(|port| port.private_port)
-                // Cloning because I can't figure out lifetimes :(
-                .map(|port| (port.clone(), container.id.clone()))
+                .map(|port| (port, &container.id))
         })
         .filter_map(|args| {
             let (port, id) = args;
@@ -40,7 +39,7 @@ pub fn filter_proxyable_containers(containers: Vec<Container>) -> Vec<ProxyableC
                 public_port: public_port as u16,
                 private_port: port.private_port as u16,
                 protocol,
-                id
+                id: id.clone()
             })
         })
         .collect();

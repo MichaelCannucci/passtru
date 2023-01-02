@@ -58,11 +58,9 @@ async fn start_proxy(
     let ip = random_private_ip();
     let address = SocketAddr::from((ip, proxy.private_port));
 
-    println!("Creating proxy for container ({0})", proxy.id);
     println!(
-        "Using address: {0} for 127.0.0.1:{1}",
-        address,
-        proxy.public_port
+        "Creating proxy for container ({0}) \n Using address: {1} for 127.0.0.1:{2}",
+        proxy.id, address, proxy.public_port
     );
 
     Ok(tokio::spawn(async move {
@@ -93,13 +91,9 @@ async fn proxy_tcp_request(
     let (mut incoming_recv, mut incoming_send) = incoming.split();
     let (mut destination_recv, mut destination_send) = destination.split();
 
-    let handle_one = async {
-        tokio::io::copy(&mut incoming_recv, &mut destination_send).await
-    };
+    let handle_one = async { tokio::io::copy(&mut incoming_recv, &mut destination_send).await };
 
-    let handle_two = async {
-        tokio::io::copy(&mut destination_recv, &mut incoming_send).await
-    };
+    let handle_two = async { tokio::io::copy(&mut destination_recv, &mut incoming_send).await };
 
     match tokio::try_join!(handle_one, handle_two) {
         Ok(_) => None,
