@@ -1,12 +1,13 @@
-// use futures::{StreamExt};
-use itertools::Itertools;
-use rand::Rng;
+use futures::{StreamExt, future::join_all};
 use shiplift::Docker;
-use tokio::join;
-use std::{
-    net::{SocketAddr, TcpListener, TcpStream},
-    thread, time::{self, Duration}, io,
-};
+use tokio::{net::TcpStream, task::JoinHandle};
+
+use crate::{ip::get_listener, info::container_information};
+
+mod ip;
+mod info;
+
+type ProxyJoinHandle = JoinHandle<()>;
 
 #[tokio::main]
 async fn main() {
@@ -15,114 +16,78 @@ async fn main() {
 
     let containers = docker.containers().list(&Default::default()).await.unwrap();
 
-    let mut threads: Vec<_> = containers
-        .iter()
-        .flat_map(|container| {
-            container
-                .ports
-                .iter()
-                .unique_by(|port| port.private_port)
-                // Cloning because I can't figure out lifetimes :(
-                .map(|port| (port.clone(), container.id.clone()))
-        })
-        .filter_map(|args| {
-            let (port, id) = args;
-            println!("Creating passthrough for {:?} for {:?}", id, port);
-            let public_port = match port.public_port {
-                Some(p) => p,
-                None => {
-                    println!("Skipping because there is no public port");
-                    return None;
-                }
-            }.to_owned();
-
-            Some(tokio::spawn(async move { passthrough( port.private_port as u16, public_port as u16) }))
-        })
-        .collect();
-
-    while let Some(thread) = threads.pop() {
-        println!("Waiting...");
-        let result = join!(thread).0;
-        match result {
-            Ok(r) => {
-                match r.await {
-                    Err(err) => eprintln!("{:?}", err),
-                    _ => println!("Thread finished")
-                }
-            },
-            Err(err) => eprintln!("{:?}", err),
+    let process_proxy = async {
+        let mut proxies: Vec<ProxyJoinHandle> = Vec::new();
+        for info in container_information(containers) {
+            let proxy = match start_proxy(info.private_port, info.public_port).await {
+                Err(err) => {
+                    eprintln!("Error starting thread {:?}", err);
+                    continue;
+                },
+                Ok(proxy) => proxy
+            };
+            proxies.push(proxy);
         }
-    }
 
-    // while let Some(event_result) = docker.events(&Default::default()).next().await {
-    //     match event_result {
-    //         Ok(event) => println!("{:?}", event),
-    //         Err(e) => eprintln!("Error: {}", e),
-    //     }
-    // }
+        join_all(proxies).await;
+    };
+
+    let process_docker_events = async {
+        while let Some(event_result) = docker.events(&Default::default()).next().await {
+            match event_result {
+                Ok(event) => println!("{:?}", event),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+    };
+
+    tokio::join!(process_proxy, process_docker_events);
 }
 
-async fn passthrough(
-    private_port: u16,
-    public_port: u16,
-) -> Result<(), io::Error> { 
-    println!("Starting passthrough");
-
-    let listener = get_listener(private_port);
+async fn start_proxy(private_port: u16, public_port: u16) -> Result<ProxyJoinHandle, std::io::Error> {
+    let listener = get_listener(private_port).await;
 
     println!(
-        "Got address for listener: {:?}:{:?}", 
-        listener.local_addr()?.ip(), 
+        "Got address for listener: {:?}:{:?}",
+        listener.local_addr()?.ip(),
         listener.local_addr()?.port()
     );
 
-    for src in listener.incoming() {
-        // Read timeout is really bad, this needs to be refactored in the future
-        let mut src = src?;
-        src.set_read_timeout(Some(Duration::from_millis(1)))?;
-    
-        let mut dst = TcpStream::connect(("127.0.0.1", public_port))?;
-        dst.set_read_timeout(Some(Duration::from_millis(1)))?;
-        
-        match io::copy(&mut src, &mut dst) {
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => (),
-            Err(err) => return Err(err),
-            Ok(_) => ()
-        };
-    
-        match io::copy(&mut dst, &mut src) {
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => (),
-            Err(err) => return Err(err),
-            Ok(_) => ()
-        };
-    }
+    println!("Starting passthrough");
 
-    Ok(())
-}
+    Ok(tokio::spawn(async move { 
+        loop {
+            let (incoming, _) = listener.accept().await.unwrap();
+            let destination = TcpStream::connect(("127.0.0.1", public_port)).await.unwrap();
 
-fn get_listener(port: u16) -> TcpListener {
-    loop {
-        let ip = random_private_ip();
-        let address = SocketAddr::from((ip, port));
-        match TcpListener::bind(address) {
-            Ok(l) => return l,
-            Err(e) => {
-                eprintln!(
-                    "Failed assigned to random private address ({:?}): {:?}",
-                    address, e
-                );
-                thread::sleep(time::Duration::from_millis(500));
-            }
+            match proxy_request(incoming, destination).await {
+                Some(err) => eprintln!("{:?}", err),
+                None => println!("finished proxing the request")
+            }   
         }
-    }
+    }))
 }
 
-fn random_private_ip() -> [u8; 4] {
-    let mut rng = rand::thread_rng();
-    [
-        127,
-        rng.gen_range(0..255),
-        rng.gen_range(0..255),
-        rng.gen_range(0..255),
-    ]
+async fn proxy_request(
+    mut incoming: TcpStream,
+    mut destination: TcpStream,
+) -> Option<tokio::io::Error> {
+    let (mut incoming_recv, mut incoming_send) = incoming.split();
+    let (mut destination_recv, mut destination_send) = destination.split();
+
+    
+    let handle_one = async {
+        println!("Proxing to container");
+        tokio::io::copy(&mut incoming_recv, &mut destination_send).await
+    };
+
+    let handle_two = async {
+        println!("Proxing response from container");
+        tokio::io::copy(&mut destination_recv, &mut incoming_send).await
+    };
+
+    match tokio::try_join!(handle_one, handle_two) {
+        Ok(_) => None,
+        Err(err) => Some(err)
+    }
 }
