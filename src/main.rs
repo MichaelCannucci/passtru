@@ -1,10 +1,16 @@
-use futures::{StreamExt, future::join_all};
+use std::net::SocketAddr;
+
+use futures::{future::join_all, StreamExt};
+use info::ProxyableContainerInformation;
 use shiplift::Docker;
 use tokio::{net::TcpStream, task::JoinHandle};
 
-use crate::{ip::get_listener, info::container_information};
+use crate::{
+    connection::{get_connection, random_private_ip, Listener},
+    info::filter_proxyable_containers,
+};
 
-mod ip;
+mod connection;
 mod info;
 
 type ProxyJoinHandle = JoinHandle<()>;
@@ -17,14 +23,15 @@ async fn main() {
     let containers = docker.containers().list(&Default::default()).await.unwrap();
 
     let process_proxy = async {
+        println!("Starting passthrough");
         let mut proxies: Vec<ProxyJoinHandle> = Vec::new();
-        for info in container_information(containers) {
-            let proxy = match start_proxy(info.private_port, info.public_port).await {
+        for info in filter_proxyable_containers(containers) {
+            let proxy = match start_proxy(info).await {
                 Err(err) => {
                     eprintln!("Error starting thread {:?}", err);
                     continue;
-                },
-                Ok(proxy) => proxy
+                }
+                Ok(proxy) => proxy,
             };
             proxies.push(proxy);
         }
@@ -33,6 +40,7 @@ async fn main() {
     };
 
     let process_docker_events = async {
+        println!("Listening for docker events");
         while let Some(event_result) = docker.events(&Default::default()).next().await {
             match event_result {
                 Ok(event) => println!("{:?}", event),
@@ -44,50 +52,57 @@ async fn main() {
     tokio::join!(process_proxy, process_docker_events);
 }
 
-async fn start_proxy(private_port: u16, public_port: u16) -> Result<ProxyJoinHandle, std::io::Error> {
-    let listener = get_listener(private_port).await;
+async fn start_proxy(
+    proxy: ProxyableContainerInformation,
+) -> Result<ProxyJoinHandle, std::io::Error> {
+    let ip = random_private_ip();
+    let address = SocketAddr::from((ip, proxy.private_port));
 
+    println!("Creating proxy for container ({0})", proxy.id);
     println!(
-        "Got address for listener: {:?}:{:?}",
-        listener.local_addr()?.ip(),
-        listener.local_addr()?.port()
+        "Using address: {0} for 127.0.0.1:{1}",
+        address,
+        proxy.public_port
     );
 
-    println!("Starting passthrough");
-
-    Ok(tokio::spawn(async move { 
+    Ok(tokio::spawn(async move {
         loop {
-            let (incoming, _) = listener.accept().await.unwrap();
-            let destination = TcpStream::connect(("127.0.0.1", public_port)).await.unwrap();
+            let incoming_connection = get_connection(address, &proxy.protocol).await;
+            match incoming_connection {
+                Listener::Tcp(tcp_listener) => {
+                    let (incoming, _) = tcp_listener.accept().await.unwrap();
+                    let destination = TcpStream::connect(("127.0.0.1", proxy.public_port))
+                        .await
+                        .unwrap();
 
-            match proxy_request(incoming, destination).await {
-                Some(err) => eprintln!("{:?}", err),
-                None => println!("finished proxing the request")
-            }   
+                    match proxy_tcp_request(incoming, destination).await {
+                        Some(err) => eprintln!("{:?}", err),
+                        None => println!("finished proxing the request"),
+                    }
+                }
+                Listener::Udp(_) => todo!(),
+            }
         }
     }))
 }
 
-async fn proxy_request(
+async fn proxy_tcp_request(
     mut incoming: TcpStream,
     mut destination: TcpStream,
 ) -> Option<tokio::io::Error> {
     let (mut incoming_recv, mut incoming_send) = incoming.split();
     let (mut destination_recv, mut destination_send) = destination.split();
 
-    
     let handle_one = async {
-        println!("Proxing to container");
         tokio::io::copy(&mut incoming_recv, &mut destination_send).await
     };
 
     let handle_two = async {
-        println!("Proxing response from container");
         tokio::io::copy(&mut destination_recv, &mut incoming_send).await
     };
 
     match tokio::try_join!(handle_one, handle_two) {
         Ok(_) => None,
-        Err(err) => Some(err)
+        Err(err) => Some(err),
     }
 }

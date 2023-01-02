@@ -1,14 +1,17 @@
 use shiplift::rep::Container;
 use itertools::Itertools;
 
+use crate::connection::Protocol;
+
 pub struct ProxyableContainerInformation 
 {
     pub public_port: u16,
     pub private_port: u16,
-    pub id: String
+    pub id: String,
+    pub protocol: Protocol,
 }
 
-pub fn container_information(containers: Vec<Container>) -> Vec<ProxyableContainerInformation> {
+pub fn filter_proxyable_containers(containers: Vec<Container>) -> Vec<ProxyableContainerInformation> {
     let ports: Vec<_> = containers
         .iter()
         .flat_map(|container| {
@@ -21,16 +24,22 @@ pub fn container_information(containers: Vec<Container>) -> Vec<ProxyableContain
         })
         .filter_map(|args| {
             let (port, id) = args;
-            println!("Creating passthrough for {:?} for {:?}", id, port);
             let public_port = match port.public_port {
                 Some(p) => p,
                 None => {
                     return None;
                 }
             };
+            let protocol = match port.typ.as_str() {
+                "tcp" => Protocol::Tcp,
+                "udp" => Protocol::Udp,
+                _ => return None
+            };
+
             Some(ProxyableContainerInformation {
                 public_port: public_port as u16,
                 private_port: port.private_port as u16,
+                protocol,
                 id
             })
         })
