@@ -64,6 +64,7 @@ async fn start_proxy(
     );
 
     Ok(tokio::spawn(async move {
+        // Todo: Avoid recreating connection each time, maybe try using Arc?
         loop {
             let incoming_connection = get_connection(address, &proxy.protocol).await;
             match incoming_connection {
@@ -72,7 +73,7 @@ async fn start_proxy(
                     let destination = TcpStream::connect(("127.0.0.1", proxy.public_port))
                         .await
                         .unwrap();
-
+                        
                     match proxy_tcp_request(incoming, destination).await {
                         Some(err) => eprintln!("{:?}", err),
                         None => println!("finished proxing the request"),
