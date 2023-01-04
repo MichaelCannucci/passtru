@@ -20,33 +20,34 @@ pub fn get_proxyable_containers(containers: Vec<Container>) -> Vec<ProxyableCont
     let mut results = Vec::<ProxyableContainer>::new();
 
     for container in containers {
-        let ports = container.ports
-        .iter()
-        .unique_by(|port| port.private_port)
-        .filter_map(|port| {
-            let public_port = match port.public_port {
-                Some(p) => p,
-                None => {
-                    return None;
-                }
-            };
-            let protocol = match port.typ.as_str() {
-                "tcp" => Protocol::Tcp,
-                "udp" => Protocol::Udp,
-                _ => return None,
-            };
+        let ports = container
+            .ports
+            .iter()
+            .unique_by(|port| port.private_port)
+            .filter_map(|port| {
+                let public_port = match port.public_port {
+                    Some(p) => p,
+                    None => {
+                        return None;
+                    }
+                };
+                let protocol = match port.typ.as_str() {
+                    "tcp" => Protocol::Tcp,
+                    "udp" => Protocol::Udp,
+                    _ => return None,
+                };
 
-            Some(ProxyPort {
-                public_port: public_port as u16,
-                private_port: port.private_port as u16,
-                protocol: protocol
+                Some(ProxyPort {
+                    public_port: public_port as u16,
+                    private_port: port.private_port as u16,
+                    protocol: protocol,
+                })
             })
-        })
-        .collect();
+            .collect();
 
-        results.push( ProxyableContainer {
+        results.push(ProxyableContainer {
             id: container.id.clone(),
-            ports
+            ports,
         })
     }
 
@@ -71,24 +72,26 @@ pub fn get_proxyable_information(details: ContainerDetails) -> ProxyableContaine
                 _ => return None,
             };
 
-            let proxy_ports: Vec<ProxyPort> = ports.iter().filter_map(|binding| {
-                let public_port = binding.get("HostPort")?.parse::<u16>().ok()?;
+            let proxy_ports: Vec<ProxyPort> = ports
+                .iter()
+                .filter_map(|binding| {
+                    let public_port = binding.get("HostPort")?.parse::<u16>().ok()?;
 
-                Some(ProxyPort {
-                    private_port,
-                    public_port,
-                    protocol: protocol.clone()
+                    Some(ProxyPort {
+                        private_port,
+                        public_port,
+                        protocol: protocol.clone(),
+                    })
                 })
-            })
-            .collect();
+                .collect();
 
             Some(proxy_ports)
         })
         .flatten()
         .collect();
 
-        ProxyableContainer {
-            id: details.id.clone(),
-            ports
-        }
+    ProxyableContainer {
+        id: details.id.clone(),
+        ports,
+    }
 }

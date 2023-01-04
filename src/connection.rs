@@ -1,8 +1,6 @@
 use rand::{distributions::Uniform, prelude::Distribution};
-use std::{
-    net::SocketAddr, thread, time::Duration,
-};
-use tokio::{net::{TcpListener, UdpSocket}};
+use std::{net::SocketAddr, thread, time::Duration};
+use tokio::net::{TcpListener, UdpSocket};
 
 #[derive(Clone)]
 pub enum Protocol {

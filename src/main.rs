@@ -1,12 +1,12 @@
+use crate::info::{get_proxyable_containers, get_proxyable_information};
 use futures::StreamExt;
 use shiplift::Docker;
-use crate::info::{get_proxyable_containers, get_proxyable_information};
 
 use proxy::ProxyManager;
 
 mod connection;
-mod proxy;
 mod info;
+mod proxy;
 
 #[tokio::main]
 async fn main() {
@@ -28,11 +28,14 @@ async fn main() {
                 match event.action.as_str() {
                     "start" => {
                         if let Ok(details) = event_container.inspect().await {
-                            if let Err(err) = manager.container_created(get_proxyable_information(details)).await {
+                            if let Err(err) = manager
+                                .container_created(get_proxyable_information(details))
+                                .await
+                            {
                                 eprintln!("{:#?}", err);
                             }
                         }
-                    },
+                    }
                     "destroy" => manager.container_removed(&event.actor.id),
                     _ => continue,
                 };

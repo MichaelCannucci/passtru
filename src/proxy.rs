@@ -1,25 +1,33 @@
 use std::{collections::HashMap, net::SocketAddr};
 
-use tokio::{task::JoinHandle, net::TcpStream};
+use tokio::{net::TcpStream, task::JoinHandle};
 
-use crate::{connection::{Listener, get_connection, random_private_ip}, info::{ProxyableContainer, ProxyPort}};
+use crate::{
+    connection::{get_connection, random_private_ip, Listener},
+    info::{ProxyPort, ProxyableContainer},
+};
 
 type ProxyJoinHandle = JoinHandle<()>;
 
 pub struct ProxyManager {
-    proxies: HashMap<String, Vec<ProxyJoinHandle>>
+    proxies: HashMap<String, Vec<ProxyJoinHandle>>,
 }
 
 impl ProxyManager {
     pub fn new() -> Self {
-        ProxyManager { proxies: Default::default() }
+        ProxyManager {
+            proxies: Default::default(),
+        }
     }
 
-    pub async fn container_created(&mut self, container: ProxyableContainer) -> Result<(), std::io::Error> {
+    pub async fn container_created(
+        &mut self,
+        container: ProxyableContainer,
+    ) -> Result<(), std::io::Error> {
         if self.proxies.contains_key(&container.id) {
-            return Ok(())
+            return Ok(());
         }
-        
+
         let mut proxies = Vec::<ProxyJoinHandle>::new();
         for port in container.ports {
             let proxy = start_proxy(&container.id, port).await?;
@@ -41,7 +49,10 @@ impl ProxyManager {
     }
 }
 
-async fn start_proxy<'a>(container_id: &String, container: ProxyPort) -> Result<ProxyJoinHandle, std::io::Error> {
+async fn start_proxy<'a>(
+    container_id: &String,
+    container: ProxyPort,
+) -> Result<ProxyJoinHandle, std::io::Error> {
     let ip = random_private_ip();
     let address = SocketAddr::from((ip, container.private_port));
 
