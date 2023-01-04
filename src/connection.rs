@@ -4,6 +4,7 @@ use std::{
 };
 use tokio::{net::{TcpListener, UdpSocket}};
 
+#[derive(Clone)]
 pub enum Protocol {
     Tcp,
     Udp,
@@ -19,17 +20,17 @@ pub async fn get_connection(address: SocketAddr, protocol: &Protocol) -> Listene
         match protocol {
             Protocol::Tcp => match TcpListener::bind(address).await {
                 Ok(listener) => return Listener::Tcp(listener),
-                Err(e) => sleep_and_retry(address, e),
+                Err(e) => sleep_log(address, e),
             },
             Protocol::Udp => match UdpSocket::bind(address).await {
                 Ok(socket) => return Listener::Udp(socket),
-                Err(e) => sleep_and_retry(address, e),
+                Err(e) => sleep_log(address, e),
             },
         }
     }
 }
 
-fn sleep_and_retry(address: SocketAddr, error: std::io::Error) {
+fn sleep_log(address: SocketAddr, error: std::io::Error) {
     eprintln!(
         "Failed assigned to random private address ({:?}): {:?}",
         address, error
