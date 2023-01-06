@@ -1,6 +1,6 @@
 use std::{collections::HashMap, net::SocketAddr};
 
-use tokio::{net::TcpStream, task::JoinHandle};
+use tokio::{net::TcpStream, task::JoinHandle, io::AsyncWriteExt};
 
 use crate::{
     connection::{get_connection, random_private_ip, Listener},
@@ -88,9 +88,19 @@ async fn proxy_tcp_request(
     let (mut incoming_recv, mut incoming_send) = incoming.split();
     let (mut destination_recv, mut destination_send) = destination.split();
 
-    let handle_one = async { tokio::io::copy(&mut incoming_recv, &mut destination_send).await };
+    let handle_one = async { 
+        let res = tokio::io::copy(&mut incoming_recv, &mut destination_send).await;
+        destination_send.shutdown().await?;
 
-    let handle_two = async { tokio::io::copy(&mut destination_recv, &mut incoming_send).await };
+        res
+    };
+
+    let handle_two = async { 
+        let res = tokio::io::copy(&mut destination_recv, &mut incoming_send).await;
+        incoming_send.shutdown().await?;
+
+        res
+    };
 
     match tokio::try_join!(handle_one, handle_two) {
         Ok(_) => None,
