@@ -62,23 +62,21 @@ async fn start_proxy<'a>(
     );
 
     Ok(tokio::spawn(async move {
-        // Todo: Avoid recreating connection each time
-        loop {
-            let incoming_connection = get_connection(address, &container.protocol).await;
-            match incoming_connection {
-                Listener::Tcp(tcp_listener) => {
+        let incoming_connection = get_connection(address, &container.protocol).await;
+        match incoming_connection {
+            Listener::Tcp(tcp_listener) => {
+                loop {
                     let (incoming, _) = tcp_listener.accept().await.unwrap();
                     let destination = TcpStream::connect(("127.0.0.1", container.public_port))
                         .await
                         .unwrap();
-
-                    match proxy_tcp_request(incoming, destination).await {
-                        Some(err) => eprintln!("{:?}", err),
-                        None => println!("finished proxing the request"),
+    
+                    if let Some(err) = proxy_tcp_request(incoming, destination).await {
+                        eprintln!("{:?}", err);
                     }
                 }
-                Listener::Udp(_) => todo!(),
             }
+            Listener::Udp(_) => todo!(),
         }
     }))
 }

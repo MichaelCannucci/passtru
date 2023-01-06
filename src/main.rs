@@ -20,30 +20,25 @@ async fn main() {
         }
     }
 
-    let handle = tokio::spawn(async move {
-        println!("Listening for docker events");
-        while let Some(event_result) = docker.events(&Default::default()).next().await {
-            if let Ok(event) = event_result {
-                let event_container = docker.containers().get(&event.actor.id);
-                match event.action.as_str() {
-                    "start" => {
-                        if let Ok(details) = event_container.inspect().await {
-                            if let Err(err) = manager
-                                .container_created(get_proxyable_information(details))
-                                .await
-                            {
-                                eprintln!("{:#?}", err);
-                            }
+    
+    println!("Listening for docker events");
+    while let Some(event_result) = docker.events(&Default::default()).next().await {
+        if let Ok(event) = event_result {
+            let event_container = docker.containers().get(&event.actor.id);
+            match event.action.as_str() {
+                "start" => {
+                    if let Ok(details) = event_container.inspect().await {
+                        if let Err(err) = manager
+                            .container_created(get_proxyable_information(details))
+                            .await
+                        {
+                            eprintln!("{:#?}", err);
                         }
                     }
-                    "destroy" => manager.container_removed(&event.actor.id),
-                    _ => continue,
-                };
-            }
+                }
+                "destroy" => manager.container_removed(&event.actor.id),
+                _ => continue,
+            };
         }
-    });
-
-    if let Err(err) = tokio::join!(handle).0 {
-        eprintln!("{:#?}", err);
     }
 }
