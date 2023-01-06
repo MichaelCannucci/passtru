@@ -1,9 +1,13 @@
 use std::{collections::HashMap, net::SocketAddr};
 
-use tokio::{net::TcpStream, task::JoinHandle, io::AsyncWriteExt};
+use tokio::{
+    io::AsyncWriteExt,
+    net::{TcpListener, TcpStream, UdpSocket},
+    task::JoinHandle,
+};
 
 use crate::{
-    connection::{get_connection, random_private_ip, Listener},
+    connection::{get_connection, random_private_ip, Inbound},
     info::{ProxyPort, ProxyableContainer},
 };
 
@@ -29,7 +33,16 @@ impl ProxyManager {
         }
 
         let mut proxies = Vec::<ProxyJoinHandle>::new();
+
+        // Note: for hostname mapping in the hosts file, follow these rules in regards to the public/private ports
+        // if they are the same, add original address that docker was bound to (i.e., 0.0.0.0, localhost)
+        // if they are different, add address that was bound (There can be both at the same time)
+
         for port in container.ports {
+            if port.private_port == port.public_port {
+                continue;
+            }
+
             let proxy = start_proxy(&container.id, port).await?;
             proxies.push(proxy);
         }
@@ -51,59 +64,94 @@ impl ProxyManager {
 
 async fn start_proxy<'a>(
     container_id: &String,
-    container: ProxyPort,
+    port: ProxyPort,
 ) -> Result<ProxyJoinHandle, std::io::Error> {
-    let ip = random_private_ip();
-    let address = SocketAddr::from((ip, container.private_port));
+    let ip = random_private_ip().clone();
+    let address = SocketAddr::from((ip, port.private_port));
 
-    println!(
-        "Creating proxy for container ({0}) \n Using address: {1} for 127.0.0.1:{2}",
-        container_id, address, container.public_port
-    );
+    let id = container_id.clone();
 
     Ok(tokio::spawn(async move {
-        let incoming_connection = get_connection(address, &container.protocol).await;
-        match incoming_connection {
-            Listener::Tcp(tcp_listener) => {
-                loop {
-                    let (incoming, _) = tcp_listener.accept().await.unwrap();
-                    let destination = TcpStream::connect(("127.0.0.1", container.public_port))
-                        .await
-                        .unwrap();
-    
-                    if let Some(err) = proxy_tcp_request(incoming, destination).await {
-                        eprintln!("{:?}", err);
-                    }
+        println!(
+            "Creating proxy for container ({0}) \n Using address: {1} for 127.0.0.1:{2}",
+            id, address, port.public_port
+        );
+
+        let listener_connection = get_connection(address, &port.protocol).await;
+        loop {
+            let result = match &listener_connection {
+                Inbound::Tcp(tcp_listener) => {
+                    proxy_tcp(tcp_listener, port.public_port).await
                 }
+                Inbound::Udp(socket) => {
+                    proxy_udp(socket, port.public_port).await
+                }
+            };
+
+            if let Some(err) = result {
+                eprintln!("{:#?}", err)
             }
-            Listener::Udp(_) => todo!(),
         }
     }))
 }
 
-async fn proxy_tcp_request(
-    mut incoming: TcpStream,
-    mut destination: TcpStream,
-) -> Option<tokio::io::Error> {
-    let (mut incoming_recv, mut incoming_send) = incoming.split();
-    let (mut destination_recv, mut destination_send) = destination.split();
+async fn proxy_udp(inbound: &UdpSocket, public_port: u16) -> Option<tokio::io::Error> {
+    let outbound = UdpSocket::bind(("127.0.0.1", public_port)).await.ok()?;
 
-    let handle_one = async { 
-        let res = tokio::io::copy(&mut incoming_recv, &mut destination_send).await;
-        destination_send.shutdown().await?;
-
-        res
-    };
-
-    let handle_two = async { 
-        let res = tokio::io::copy(&mut destination_recv, &mut incoming_send).await;
-        incoming_send.shutdown().await?;
-
-        res
-    };
-
-    match tokio::try_join!(handle_one, handle_two) {
-        Ok(_) => None,
+    let join = tokio::try_join!(
+        async {
+            let mut buf = vec![0; 1024];
+            while let Ok((size, peer)) = inbound.recv_from(&mut buf).await {
+                let amt = outbound.send_to(&buf[..size], &peer).await?;
+                println!("Echoed {}/{} bytes to {}", amt, size, peer);
+            }
+            Ok(())
+        },
+        async {
+            let mut buf = vec![0; 1024];
+            while let Ok((size, peer)) = outbound.recv_from(&mut buf).await {
+                let amt = inbound.send_to(&buf[..size], &peer).await?;
+                println!("Echoed {}/{} bytes to {}", amt, size, peer);
+            }
+    
+            Ok(())
+        }
+    );
+        
+    match join {
         Err(err) => Some(err),
+        Ok(_) => None,
+    }
+
+}
+
+async fn proxy_tcp(listener: &TcpListener, public_port: u16) -> Option<tokio::io::Error> {
+    loop {
+        let (mut inbound, _) = listener.accept().await.unwrap();
+        let mut destination = TcpStream::connect(("127.0.0.1", public_port))
+            .await
+            .unwrap();
+
+        let (mut inbound_rv, mut inbound_tx) = inbound.split();
+        let (mut outbound_rv, mut outbound_tx) = destination.split();
+
+        let join = tokio::try_join!(
+            async {
+                let res = tokio::io::copy(&mut inbound_rv, &mut outbound_tx).await;
+                outbound_tx.shutdown().await?;
+
+                res
+            },
+            async {
+                let res = tokio::io::copy(&mut outbound_rv, &mut inbound_tx).await;
+                inbound_tx.shutdown().await?;
+
+                res
+            }
+        );
+
+        if let Err(err) = join {
+            return Some(err);
+        }
     }
 }

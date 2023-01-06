@@ -3,13 +3,13 @@ use shiplift::rep::{Container, ContainerDetails};
 
 use crate::connection::Protocol;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ProxyableContainer {
     pub ports: Vec<ProxyPort>,
     pub id: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ProxyPort {
     pub public_port: u16,
     pub private_port: u16,
@@ -31,6 +31,7 @@ pub fn get_proxyable_containers(containers: Vec<Container>) -> Vec<ProxyableCont
                         return None;
                     }
                 };
+
                 let protocol = match port.typ.as_str() {
                     "tcp" => Protocol::Tcp,
                     "udp" => Protocol::Udp,

@@ -20,7 +20,6 @@ async fn main() {
         }
     }
 
-    
     println!("Listening for docker events");
     while let Some(event_result) = docker.events(&Default::default()).next().await {
         if let Ok(event) = event_result {
@@ -28,16 +27,14 @@ async fn main() {
             match event.action.as_str() {
                 "start" => {
                     if let Ok(details) = event_container.inspect().await {
-                        if let Err(err) = manager
-                            .container_created(get_proxyable_information(details))
-                            .await
-                        {
+                        let info = get_proxyable_information(details);
+                        if let Err(err) = manager.container_created(info).await {
                             eprintln!("{:#?}", err);
                         }
                     }
                 }
-                "destroy" => manager.container_removed(&event.actor.id),
-                _ => continue,
+                "kill" | "destroy" | "die" => manager.container_removed(&event.actor.id),
+                _ => println!("{0}", event.action),
             };
         }
     }
